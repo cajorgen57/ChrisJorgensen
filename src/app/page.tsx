@@ -7,18 +7,21 @@ import { Badge } from "@/components/ui/badge";
 import Link from "next/link";
 import { Wallet, LineChart, Apple, Activity, Receipt } from "lucide-react";
 import { getNetWorth, getSpending, getRecentTransactions } from "@/lib/finance-queries";
+import { getRollingAverage } from "@/lib/nutrition-queries";
 import { prisma } from "@/lib/db";
-import { formatCurrency, cn } from "@/lib/utils";
+import { formatCurrency, formatNumber, cn } from "@/lib/utils";
 import { format } from "date-fns";
 
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
-  const [netWorth, spending, recent, itemCount] = await Promise.all([
+  const [netWorth, spending, recent, itemCount, nutrition7d, latestDexa] = await Promise.all([
     getNetWorth(),
     getSpending(30),
     getRecentTransactions(8),
     prisma.plaidItem.count(),
+    getRollingAverage(7),
+    prisma.dexaScan.findFirst({ orderBy: { scanDate: "desc" } }),
   ]);
 
   const hasFinance = itemCount > 0;
@@ -47,14 +50,22 @@ export default async function DashboardPage() {
           />
           <StatCard
             label="Calories (avg 7d)"
-            value="—"
-            hint="Import Cronometer CSV"
+            value={nutrition7d ? `${formatNumber(nutrition7d.energyKcal)} kcal` : "—"}
+            hint={
+              nutrition7d
+                ? `${formatNumber(nutrition7d.proteinG)}g protein`
+                : "Import Cronometer CSV"
+            }
             accentClass="text-fitness"
           />
           <StatCard
             label="Body fat %"
-            value="—"
-            hint="Add a DEXA scan"
+            value={latestDexa?.bodyFatPct != null ? `${latestDexa.bodyFatPct.toFixed(1)}%` : "—"}
+            hint={
+              latestDexa
+                ? `DEXA ${format(latestDexa.scanDate, "PP")}`
+                : "Add a DEXA scan"
+            }
             accentClass="text-fitness-accent"
           />
         </section>
