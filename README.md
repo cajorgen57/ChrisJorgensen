@@ -18,25 +18,20 @@ your financial or health data.
 
 ## Roadmap
 
-This is being built in phases. **Phase 1 (foundation) is complete**; the rest
-is wired up as empty pages with clear next steps.
+All five phases are landed. Future work would be charting/categorization
+refinements, account-level tax-status overrides, and webhook-driven Plaid
+sync.
 
-- [x] **Phase 1 — Foundation**
-  - Project scaffold, design system, sidebar/dashboard shell
-  - Full Prisma schema for finance + fitness
-  - Plaid client + at-rest encryption helpers (no flow yet)
-  - Empty pages for every section
-- [ ] **Phase 2 — Plaid Link & transactions**
-  - `/api/plaid/link-token`, `/api/plaid/exchange-token`
-  - `/api/plaid/sync` using `/transactions/sync` cursor
-  - Categorization view + user-override category
-- [ ] **Phase 3 — Investments & TLH**
-  - Holdings + cost basis pull from Plaid Investments
-  - Wash-sale-aware TLH candidate engine + substitute suggestions
-- [ ] **Phase 4 — Cronometer nutrition**
-  - CSV upload, parse, dedupe, daily/rolling charts
-- [ ] **Phase 5 — DEXA & body composition**
-  - Manual entry forms, PDF upload (stored under `/uploads`), trend charts
+- [x] **Phase 1 — Foundation:** scaffold, design system, full Prisma schema,
+  Plaid client + at-rest encryption helpers
+- [x] **Phase 2 — Plaid Link & transactions:** Link flow, `/transactions/sync`
+  with cursor, real Accounts and Transactions pages
+- [x] **Phase 3 — Investments & TLH:** holdings + cost basis,
+  wash-sale-aware TLH engine with curated ETF substitute map
+- [x] **Phase 4 — Cronometer nutrition:** CSV import (tolerant header
+  matching, dedup), daily/rolling charts
+- [x] **Phase 5 — DEXA & body composition:** manual entry forms for daily
+  metrics and DEXA scans, optional PDF upload, trend charts
 
 ---
 
@@ -115,17 +110,33 @@ src/
     body/                DEXA scans + daily body metrics
     settings/            Environment + integration health
   components/
-    ui/                  Card, Button (shadcn-style primitives)
+    ui/                  shadcn-style primitives (Card, Button, Input,
+                         Label, Badge, Skeleton, Tabs)
     sidebar.tsx          Left nav
     topbar.tsx           Page header w/ theme toggle
     stat-card.tsx        Big-number cards
     empty-state.tsx      Friendly "no data yet" card
     theme-provider.tsx   next-themes wrapper
+    plaid-link-button.tsx, item-actions.tsx — Plaid linking + sync controls
+    allocation-chart.tsx — investments pie
+    tlh-actions.tsx      — TLH regenerate + per-candidate Acted/Dismiss
+    nutrition-upload.tsx, nutrition-charts.tsx — Cronometer import + charts
+    body-metric-form.tsx, dexa-form.tsx, body-charts.tsx — manual entry
+                         forms + DEXA/weight trend charts
   lib/
     db.ts                Prisma client singleton
     plaid.ts             Plaid SDK client, products, country codes
     crypto.ts            AES-256-GCM encrypt/decrypt for tokens
     utils.ts             cn(), money/number formatters
+    plaid-sync.ts        Link / exchange / sync / remove for Plaid items
+    investments-sync.ts  Holdings + investment txs from Plaid
+    tax-status.ts        Infer taxable / tax-advantaged from Plaid subtype
+    tlh-engine.ts        Wash-sale-aware TLH candidate generator
+    tlh-substitutes.ts   Curated ETF swap map
+    finance-queries.ts   Net worth, spending, recent txs
+    investment-queries.ts Rolled holdings, allocation
+    nutrition-import.ts  Cronometer Servings CSV parser + dedup importer
+    nutrition-queries.ts Daily totals + rolling averages
 prisma/
   schema.prisma          Full data model — see comments in file
 archive/                 Old contents of this repo (game AI, pandas lessons),
