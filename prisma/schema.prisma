@@ -1,0 +1,303 @@
+// Personal finance + fitness tracker schema.
+//
+// Design notes:
+// - Money is stored as integer cents (BigInt) to avoid floating-point drift.
+// - Dates that represent calendar days (transaction date, weigh-in date, meal
+//   date) are stored as DateTime at UTC midnight; treat them as date-only.
+// - Plaid access tokens are sensitive — they grant access to your accounts.
+//   Encrypt at rest using APP_SECRET before persisting. The schema stores the
+//   ciphertext; encryption/decryption lives in src/lib/crypto.ts.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// FINANCE — Plaid items, accounts, transactions, holdings
+// ============================================================================
+
+model PlaidItem {
+  id                 String    @id @default(cuid())
+  itemId             String    @unique // Plaid item_id
+  institutionId      String?
+  institutionName    String?
+  accessTokenCipher  String    // encrypted access_token
+  cursor             String?   // Plaid /transactions/sync cursor
+  lastSyncedAt       DateTime?
+  status             String    @default("active") // active | error | revoked
+  errorCode          String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  accounts           Account[]
+
+  @@index([status])
+}
+
+model Account {
+  id            String   @id @default(cuid())
+  plaidAccountId String  @unique
+  itemId        String
+  item          PlaidItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  name          String
+  officialName  String?
+  mask          String?
+  type          String   // depository | credit | loan | investment | other
+  subtype       String?  // checking | savings | credit card | 401k | brokerage | ...
+
+  currentBalance Float?  // Plaid returns floats; we keep them for display, but
+  availableBalance Float? // money math should always go through cents fields.
+  isoCurrency   String   @default("USD")
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  transactions  Transaction[]
+  holdings      Holding[]
+  investmentTransactions InvestmentTransaction[]
+
+  @@index([itemId])
+}
+
+model Transaction {
+  id              String   @id @default(cuid())
+  plaidTxId       String   @unique
+  accountId       String
+  account         Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  date            DateTime // posted date (calendar day, UTC midnight)
+  authorizedDate  DateTime?
+  amountCents     BigInt   // positive = outflow, negative = inflow (Plaid convention)
+  isoCurrency     String   @default("USD")
+  name            String
+  merchantName    String?
+  pending         Boolean  @default(false)
+
+  // Plaid Personal Finance Category — preferred. Legacy `category` is fallback.
+  pfcPrimary      String?
+  pfcDetailed     String?
+  category        String?  // legacy top-level
+
+  // User overrides
+  userCategory    String?
+  notes           String?
+  excluded        Boolean  @default(false) // exclude from budgets/charts (e.g. internal transfers)
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([accountId, date])
+  @@index([date])
+  @@index([pfcPrimary])
+}
+
+model Security {
+  id           String   @id @default(cuid())
+  plaidSecurityId String @unique
+  ticker       String?
+  cusip        String?
+  isin         String?
+  name         String?
+  type         String?  // equity | etf | mutual fund | fixed income | cash | crypto | ...
+  isoCurrency  String   @default("USD")
+  closePrice   Float?
+  closePriceAsOf DateTime?
+
+  holdings     Holding[]
+  investmentTransactions InvestmentTransaction[]
+  tlhSubstitutes TlhSubstitute[]
+
+  @@index([ticker])
+}
+
+model Holding {
+  id              String   @id @default(cuid())
+  accountId       String
+  account         Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  securityId      String
+  security        Security @relation(fields: [securityId], references: [id], onDelete: Cascade)
+
+  quantity        Float
+  costBasis       Float?   // total cost basis (USD)
+  institutionPrice Float?
+  institutionPriceAsOf DateTime?
+  institutionValue Float?
+  isoCurrency     String   @default("USD")
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([accountId, securityId])
+  @@index([securityId])
+}
+
+model InvestmentTransaction {
+  id           String   @id @default(cuid())
+  plaidInvestmentTxId String @unique
+  accountId    String
+  account      Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  securityId   String?
+  security     Security? @relation(fields: [securityId], references: [id])
+
+  date         DateTime
+  type         String   // buy | sell | dividend | fee | transfer | cash | ...
+  subtype      String?
+  quantity     Float?
+  price        Float?
+  fees         Float?
+  amount       Float    // signed cash amount
+  isoCurrency  String   @default("USD")
+  name         String?
+
+  createdAt    DateTime @default(now())
+
+  @@index([accountId, date])
+  @@index([securityId, date])
+}
+
+// Tax-loss harvesting suggestions — generated by the TLH engine, persisted so
+// the user can dismiss/act on them and we can detect realized losses later.
+model TlhCandidate {
+  id              String   @id @default(cuid())
+  generatedAt     DateTime @default(now())
+  accountId       String
+  securityId      String
+  ticker          String?
+  quantity        Float
+  costBasis       Float
+  marketValue     Float
+  unrealizedLoss  Float    // positive number representing $ loss
+  washSaleRisk    Boolean  @default(false)
+  washSaleReason  String?
+  status          String   @default("open") // open | dismissed | acted
+  notes           String?
+
+  substitutes     TlhSubstitute[]
+
+  @@index([status, generatedAt])
+}
+
+model TlhSubstitute {
+  id            String   @id @default(cuid())
+  candidateId   String
+  candidate     TlhCandidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  securityId    String
+  security      Security @relation(fields: [securityId], references: [id])
+  rationale     String?  // why this is a "not substantially identical" swap
+
+  @@index([candidateId])
+}
+
+// ============================================================================
+// FITNESS — nutrition (Cronometer), body composition (DEXA + weigh-ins)
+// ============================================================================
+
+// One row per food/serving logged in Cronometer. Cronometer's "Servings"
+// CSV export gives day + time + food + amount + per-row macros/micros.
+model NutritionEntry {
+  id           String   @id @default(cuid())
+  date         DateTime // calendar day
+  loggedAt     DateTime?
+  foodName     String
+  amount       Float?
+  unit         String?
+  category     String?  // meal group (breakfast/lunch/dinner/snack) if available
+
+  // Macros (grams unless noted)
+  energyKcal   Float?
+  proteinG     Float?
+  carbsG       Float?
+  fiberG       Float?
+  sugarG       Float?
+  fatG         Float?
+  saturatedFatG Float?
+  transFatG    Float?
+  cholesterolMg Float?
+  sodiumMg     Float?
+
+  // Free-form bag of additional nutrients from Cronometer (vitamins, minerals).
+  // Stored as JSON string for SQLite compatibility.
+  micros       String?  // JSON: { "Vitamin D (mcg)": 12.3, ... }
+
+  importBatchId String?
+  importBatch  NutritionImport? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+
+  createdAt    DateTime @default(now())
+
+  @@index([date])
+  @@index([importBatchId])
+}
+
+model NutritionImport {
+  id           String   @id @default(cuid())
+  source       String   @default("cronometer") // cronometer | manual
+  filename     String?
+  rowsImported Int      @default(0)
+  startDate    DateTime?
+  endDate      DateTime?
+  createdAt    DateTime @default(now())
+
+  entries      NutritionEntry[]
+}
+
+// Daily roll-up of body metrics — weight, sleep, RHR, etc. One row per day.
+model BodyMetric {
+  id              String   @id @default(cuid())
+  date            DateTime @unique
+  weightKg        Float?
+  bodyFatPct      Float?   // from smart scale or estimated
+  waistCm         Float?
+  restingHrBpm    Int?
+  hrvMs           Float?
+  sleepHours      Float?
+  steps           Int?
+  notes           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([date])
+}
+
+// One row per DEXA scan. Stores headline body composition; raw report PDF
+// path optional (we keep the file outside git in /uploads).
+model DexaScan {
+  id                  String   @id @default(cuid())
+  scanDate            DateTime
+  provider            String?  // facility / brand
+  totalMassKg         Float?
+  leanMassKg          Float?
+  fatMassKg           Float?
+  bodyFatPct          Float?
+  vatMassG            Float?   // visceral adipose tissue
+  bmcKg               Float?   // bone mineral content
+  bmdGcm2             Float?   // bone mineral density
+  androidFatPct       Float?
+  gynoidFatPct        Float?
+  agRatio             Float?
+
+  // Per-region detail stored as JSON for flexibility across scanner outputs.
+  regions             String?  // JSON: { "Arms": {...}, "Legs": {...}, ... }
+
+  reportFilePath      String?  // local path under /uploads, never committed
+  notes               String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([scanDate])
+}
+
+// ============================================================================
+// SYSTEM — for app-level state we don't want to store as env
+// ============================================================================
+
+model AppSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
