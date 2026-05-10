@@ -55,6 +55,10 @@ model Account {
   availableBalance Float? // money math should always go through cents fields.
   isoCurrency   String   @default("USD")
 
+  // Tax treatment for the investing engine. Inferred from subtype on first
+  // sync; user can override later. Values: taxable | tax_advantaged | unknown.
+  taxStatus     String   @default("unknown")
+
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 

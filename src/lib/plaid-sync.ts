@@ -1,6 +1,8 @@
 import { plaid, plaidProducts, plaidCountryCodes } from "./plaid";
 import { encrypt, decrypt } from "./crypto";
 import { prisma } from "./db";
+import { inferTaxStatus } from "./tax-status";
+import { syncInvestmentsForItem } from "./investments-sync";
 import type {
   AccountBase,
   Transaction as PlaidTransaction,
@@ -126,12 +128,34 @@ export async function syncItem(itemRowId: string) {
     }
   }
 
+  // ----- Investments (best-effort; only runs if item has the product) -----
+  let investmentsResult: { holdings: number; transactions: number; skipped?: string } = {
+    holdings: 0,
+    transactions: 0,
+  };
+  try {
+    investmentsResult = await syncInvestmentsForItem(item.id, accessToken);
+  } catch (err: unknown) {
+    const code = (err as { response?: { data?: { error_code?: string } } })?.response?.data
+      ?.error_code;
+    investmentsResult = {
+      holdings: 0,
+      transactions: 0,
+      skipped: code ?? (err instanceof Error ? err.message : "unknown"),
+    };
+  }
+
   await prisma.plaidItem.update({
     where: { id: item.id },
     data: { cursor, lastSyncedAt: new Date(), status: "active", errorCode: null },
   });
 
-  return { added: added.length, modified: modified.length, removed: removed.length };
+  return {
+    added: added.length,
+    modified: modified.length,
+    removed: removed.length,
+    investments: investmentsResult,
+  };
 }
 
 export async function syncAllItems() {
@@ -176,7 +200,8 @@ export async function removeItem(itemRowId: string) {
 // ---------------------------------------------------------------------------
 
 async function upsertAccount(a: AccountBase, itemId: string) {
-  const data = {
+  const taxStatus = inferTaxStatus(a.type, a.subtype);
+  const updateData = {
     name: a.name,
     officialName: a.official_name ?? null,
     mask: a.mask ?? null,
@@ -188,8 +213,9 @@ async function upsertAccount(a: AccountBase, itemId: string) {
   };
   await prisma.account.upsert({
     where: { plaidAccountId: a.account_id },
-    create: { plaidAccountId: a.account_id, itemId, ...data },
-    update: data,
+    create: { plaidAccountId: a.account_id, itemId, taxStatus, ...updateData },
+    // Only set taxStatus on create — preserve user overrides on subsequent syncs.
+    update: updateData,
   });
 }
 
